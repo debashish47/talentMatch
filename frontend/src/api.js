@@ -1,0 +1,2 @@
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+export async function api(path, options={}) { const user=JSON.parse(localStorage.getItem('jobboardUser')||'null'); const r=await fetch(BASE+path,{...options,headers:{'Content-Type':'application/json',...(user?{'X-User-Id':user.id}:{}),...(options.headers||{})}}); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||'Something went wrong'); return r.status===204?null:r.json(); }

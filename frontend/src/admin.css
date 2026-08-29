@@ -1,0 +1,10 @@
+.pill { border-radius: 4px; }
+.table > div { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; justify-content: initial; }
+.applicants { display: grid; gap: 12px; }
+.applicant { padding: 17px; }
+.applicant-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.applicant-head p { margin: 4px 0 12px; }
+.applicant-head strong { background: #e1f0e4; color: #1d5b45; border-radius: 4px; padding: 6px 8px; font-size: 12px; white-space: nowrap; }
+.applicant > p { font-size: 13px; line-height: 1.5; margin: 8px 0; }
+.applicant select { margin-top: 10px; }
+@media (max-width: 480px) { .applicant-head { display: block; }.applicant-head strong { display: inline-block; } }
