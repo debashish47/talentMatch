@@ -5,3 +5,4 @@ __pycache__/
 node_modules/
 dist/
 .env
+backend/chroma_db/

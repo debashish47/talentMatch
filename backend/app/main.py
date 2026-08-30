@@ -9,7 +9,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 from .database import Base, engine, get_db
 from .models import Application, Candidate, Job
-from .schemas import ApplyIn, ApplicationOut, CandidateIn, CandidateOut, JobIn, JobOut, LoginIn, MatchIn, RegisterIn, StatusIn
+from .schemas import ApplyIn, ApplicationOut, CandidateIn, CandidateOut, ChatIn, JobIn, JobOut, LoginIn, MatchIn, RegisterIn, StatusIn
+from .rag_service import answer_job_question, generate_match_assistant_reply, index_job_embedding, remove_job_embedding, semantic_job_matches
 from .services import extract_preferences, match_jobs, norm
 
 app = FastAPI(title="AI Job Board API")
@@ -94,19 +95,21 @@ def list_jobs(skill: Optional[str] = None, location: Optional[str] = None, exper
 def get_job(job_id: int, db: Session = Depends(get_db)): return job_or_404(db, job_id)
 @app.post("/api/jobs", response_model=JobOut, status_code=201)
 def create_job(data: JobIn, db: Session = Depends(get_db), _: Candidate = Depends(admin_user)):
-    obj = Job(**data.model_dump()); db.add(obj); db.commit(); db.refresh(obj); return obj
+    obj = Job(**data.model_dump()); db.add(obj); db.commit(); db.refresh(obj)
+    # Admin job publishing immediately creates the persistent Chroma embedding.
+    index_job_embedding(obj); return obj
 @app.put("/api/jobs/{job_id}", response_model=JobOut)
 def update_job(job_id: int, data: JobIn, db: Session = Depends(get_db), _: Candidate = Depends(admin_user)):
     obj = job_or_404(db, job_id)
     for k,v in data.model_dump().items(): setattr(obj,k,v)
-    db.commit(); db.refresh(obj); return obj
+    db.commit(); db.refresh(obj); index_job_embedding(obj); return obj
 @app.patch("/api/jobs/{job_id}/status", response_model=JobOut)
 def set_job_status(job_id: int, data: StatusIn, db: Session = Depends(get_db), _: Candidate = Depends(admin_user)):
     if data.status not in ["open", "closed"]: raise HTTPException(422, "Status must be open or closed")
-    obj=job_or_404(db, job_id); obj.status=data.status; db.commit(); db.refresh(obj); return obj
+    obj=job_or_404(db, job_id); obj.status=data.status; db.commit(); db.refresh(obj); index_job_embedding(obj); return obj
 @app.delete("/api/jobs/{job_id}", status_code=204)
 def delete_job(job_id: int, db: Session = Depends(get_db), _: Candidate = Depends(admin_user)):
-    db.delete(job_or_404(db,job_id)); db.commit()
+    obj = job_or_404(db,job_id); remove_job_embedding(obj.id); db.delete(obj); db.commit()
 
 def application_out(a): return ApplicationOut(id=a.id,candidate_id=a.candidate_id,job_id=a.job_id,status=a.status,applied_at=a.applied_at,candidate_name=a.candidate.name,job_title=a.job.title,candidate_skills=a.candidate.skills or [],candidate_education=a.candidate.education,candidate_projects=a.candidate.project_summaries or [],candidate_preferred_role=a.candidate.preferred_role_type,candidate_preferred_location=a.candidate.preferred_location)
 @app.post("/api/applications", response_model=ApplicationOut, status_code=201)
@@ -137,7 +140,19 @@ def dashboard(db:Session=Depends(get_db), _: Candidate = Depends(admin_user)):
     pipe=Counter(a.status for a in apps)
     return {"applications_per_job":[{"job_id":j.id,"job_title":j.title,"application_count":len(j.applications)} for j in jobs],"skill_distribution":[{"skill":s,"count":c} for s,c in skills.most_common()],"pipeline_counts":{s:pipe.get(s,0) for s in ["Applied","Shortlisted","Rejected"]}}
 @app.post("/api/ai/match-jobs")
-def ai_match(data:MatchIn,db:Session=Depends(get_db)):
+def ai_match(data:MatchIn,db:Session=Depends(get_db), user: Candidate = Depends(current_user)):
+    if user.role != "candidate" or user.id != data.candidate_id: raise HTTPException(403, "Candidates can only match jobs for themselves")
     candidate=candidate_or_404(db,data.candidate_id); prefs=extract_preferences(data.query,candidate)
     jobs=db.scalars(select(Job).where(Job.status=="open")).all()
-    return {"parsed_preferences":prefs,"matches":match_jobs(prefs,jobs)}
+    # Retrieve jobs by vector similarity first; Gemini sees only those retrieved listings.
+    matches = semantic_job_matches(data.query, candidate, jobs)
+    return {"parsed_preferences":prefs,"matches":matches,"assistant_reply":generate_match_assistant_reply(data.query, candidate, matches)}
+
+@app.post("/api/chat")
+def chat(data: ChatIn, db: Session = Depends(get_db), user: Candidate = Depends(current_user)):
+    if user.role != "candidate": raise HTTPException(403, "The job assistant is available to candidates")
+    jobs = db.scalars(select(Job).where(Job.status == "open")).all()
+    try:
+        return answer_job_question(data.message, user, jobs)
+    except ValueError as error:
+        raise HTTPException(503, str(error))

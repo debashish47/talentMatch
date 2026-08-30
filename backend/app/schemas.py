@@ -46,6 +46,8 @@ class ApplyIn(BaseModel):
 class MatchIn(BaseModel):
     candidate_id: int
     query: str = Field(min_length=2)
+class ChatIn(BaseModel):
+    message: str = Field(min_length=2, max_length=2000)
 class ApplicationOut(BaseModel):
     id: int
     candidate_id: int
